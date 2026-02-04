@@ -3,6 +3,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version('GtkSource', '5')
 from gi.repository import Gtk, Gdk, Adw, GLib, GtkSource, Gio
 from .theme_page import load_colors_from_css, create_color_thumbnail_button
+from .load_theme_dialog import LoadThemeDialog
 
 #Stripped down colors for the time being
 gnome_colors = {
@@ -148,16 +149,16 @@ class CustomPage(Gtk.Box):
         for bundle, title in zip(gnome_colors.keys(), [accent_label, main_label, success_label, destructive_label, warning_label, interface_label, colors_label]):
             self.append(CustomBundle(title, bundle))
 
-        name_entry = Gtk.Entry(placeholder_text=_("Theme name (required)"), hexpand=True, width_request=250, halign=Gtk.Align.CENTER)
-        name_entry.connect("changed", self.entry_changed)
-        name_entry.add_css_class("error")
+        self.name_entry = Gtk.Entry(placeholder_text=_("Theme name (required)"), hexpand=True, width_request=250, halign=Gtk.Align.CENTER)
+        self.name_entry.connect("changed", self.entry_changed)
+        self.name_entry.add_css_class("error")
 
         mode_label = Gtk.Label(label=_("Theme Type"), xalign=0.5); mode_label.add_css_class("title-4")
-        light_radio = Gtk.CheckButton(label=_("Light"), group=None, active=True)
-        dark_radio = Gtk.CheckButton(label=_("Dark"), group=light_radio)
+        self.light_radio = Gtk.CheckButton(label=_("Light"), group=None, active=True)
+        dark_radio = Gtk.CheckButton(label=_("Dark"), group=self.light_radio)
 
         mode_box = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
-        mode_box.append(light_radio)
+        mode_box.append(self.light_radio)
         mode_box.append(dark_radio)
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -171,11 +172,20 @@ class CustomPage(Gtk.Box):
 
         self.append(mode_label)
         self.append(mode_box)
-        self.append(name_entry)
+        self.append(self.name_entry)
 
         self.append(open_folder_button)
-        self.save_button = Gtk.Button(label=_("Save"), sensitive=False, margin_bottom=12, margin_start=12, margin_end=12)
-        self.save_button.connect("clicked", self.save_theme, parent, name_entry, light_radio)
+
+        action_box = Gtk.Box(spacing=12, margin_bottom=12, margin_start=12, margin_end=12, homogeneous=True)
+
+        load_button = Gtk.Button(label=_("Load"))
+        load_button.connect("clicked", self.on_load_clicked, parent)
+
+        self.save_button = Gtk.Button(label=_("Save"), sensitive=False)
+        self.save_button.connect("clicked", self.save_theme, parent)
+
+        action_box.append(load_button)
+        action_box.append(self.save_button)
 
         GtkSource.init()
         css_entry = GtkSource.View(auto_indent=True, indent_width=2, show_line_numbers=True)
@@ -193,7 +203,7 @@ class CustomPage(Gtk.Box):
         css_entry.set_buffer(self.buffer)
 
         self.append(Gtk.ScrolledWindow(child=css_entry, height_request=240))
-        self.append(self.save_button)
+        self.append(action_box)
 
     def entry_changed(self, entry):
         if(entry.get_text() == ''):
@@ -206,7 +216,53 @@ class CustomPage(Gtk.Box):
     def on_emoji_picked(self, emojipicker, emoji, entry):
         entry.set_label(emoji)
 
-    def save_theme(self, button, parent, entry, light_radio):
+    def on_load_clicked(self, button, parent):
+        dialog = LoadThemeDialog(parent, self.load_theme)
+        dialog.present(parent)
+
+    def load_theme(self, path, name, theme_type):
+        colors = load_colors_from_css(path)
+
+        self.light_radio.set_active(theme_type == "light")
+
+        for picker in rgba_pickers:
+            if picker.variable in colors:
+                rgba = Gdk.RGBA()
+                rgba.parse(colors[picker.variable])
+                picker.set_rgba(rgba)
+
+        src_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom-template.css")
+        if not os.path.exists(src_file):
+            src_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../themes/custom-template.css")
+
+        if os.path.exists(src_file):
+            with open(src_file, "r", encoding="utf-8") as f:
+                src_file_text = f.read()
+
+            for picker in rgba_pickers:
+                rgb = picker.get_rgba()
+                hex_color = '#{:02x}{:02x}{:02x}'.format(
+                    int(rgb.red * 255),
+                    int(rgb.green * 255),
+                    int(rgb.blue * 255)
+                )
+                src_file_text = src_file_text.replace("@" + picker.variable, hex_color)
+
+            with open(path, "r", encoding="utf-8") as f:
+                loaded_text = f.read()
+
+            if loaded_text.startswith(src_file_text):
+                extra = loaded_text[len(src_file_text):]
+                self.buffer.set_text(extra)
+            else:
+                self.buffer.set_text("")
+
+        self.name_entry.set_text(name)
+
+    def save_theme(self, button, parent):
+        entry = self.name_entry
+        light_radio = self.light_radio
+
         parent.toast_overlay.add_toast(Adw.Toast(timeout=3, title=entry.get_text() + _(" has been saved")))
 
         if(light_radio.get_active()):
@@ -215,7 +271,12 @@ class CustomPage(Gtk.Box):
             theme_type = "dark"
 
         src_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom-template.css")
-        src_file_text = open(src_file).read()
+        if not os.path.exists(src_file):
+            src_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../themes/custom-template.css")
+
+        with open(src_file, "r", encoding="utf-8") as f:
+            src_file_text = f.read()
+
         for color in rgba_pickers:
             rgb = color.get_rgba()
             hex_color = '#{:02x}{:02x}{:02x}'.format(
@@ -227,8 +288,8 @@ class CustomPage(Gtk.Box):
         src_file_text += self.buffer.get_text(self.buffer.get_start_iter(), self.buffer.get_end_iter(), True)
         os.makedirs(os.path.join(parent.data_dir, theme_type), exist_ok=True)
         theme_file = os.path.join(parent.data_dir, theme_type, entry.get_text() + ".css")
-        shutil.copyfile(src_file, theme_file)
-        with open(theme_file, "w") as file:
+
+        with open(theme_file, "w", encoding="utf-8") as file:
             file.write(src_file_text)
 
         match(theme_type):
